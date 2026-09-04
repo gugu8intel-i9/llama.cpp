@@ -87,12 +87,15 @@ export class ModelStatusManager {
 		return result;
 	});
 	private downloadProgress = new SvelteMap<string, ModelDownloadProgress>();
+	/** Whether the post-reload download restore already ran. */
+	private downloadsRestored = false;
 	/** `<repo>:<tag>` strings whose most recent download attempt failed (download_failed). */
 	private failedDownloads = new SvelteSet<string>();
 	private loadingStates = new SvelteMap<string, boolean>();
 	private loadProgress = new SvelteMap<string, ModelLoadProgress>();
 	/** Paused downloads with their last reported progress, or null when none arrived before the pause. */
 	private pausedDownloads = new SvelteMap<string, ModelDownloadProgress | null>();
+
 	// /models/sse feed state, the single source of truth for status and load progress
 	private statusAbort: AbortController | null = null;
 	private statusReaderActive = false;
@@ -371,6 +374,41 @@ export class ModelStatusManager {
 		} catch {
 			this.stopRequests.delete(repoWithTag);
 			toast.error(`Failed to pause: ${repoWithTag}`);
+		}
+	}
+
+	/**
+	 * Reconnect the download state after a page reload, mirroring what
+	 * `llama-server -hf` does on a rerun: the feed picks up in-flight downloads
+	 * again, and previously paused ones resume from the partial files the
+	 * pause kept on disk.
+	 */
+	async restoreDownloads(): Promise<void> {
+		if (this.downloadsRestored || !serverStore.isRouterMode) return;
+
+		this.downloadsRestored = true;
+
+		this.subscribe();
+
+		for (const repoWithTag of Array.from(this.pausedDownloads.keys())) {
+			const status = this.host.routerModels.find(
+				(m) => downloadIdKey(m.id) === downloadIdKey(repoWithTag)
+			)?.status?.value;
+
+			if (status === ServerModelStatus.DOWNLOADING) {
+				// already running again: the feed reports its progress
+				this.deletePausedDownload(repoWithTag);
+			} else if (
+				status === ServerModelStatus.DOWNLOADED ||
+				status === ServerModelStatus.DOWNLOAD_FINISHED
+			) {
+				// finished while the page was closed
+				this.deletePausedDownload(repoWithTag);
+			} else {
+				// paused before the reload: resume from the partial files;
+				// a failure already toasted, keep restoring the rest
+				await this.downloadModel(repoWithTag).catch(() => {});
+			}
 		}
 	}
 

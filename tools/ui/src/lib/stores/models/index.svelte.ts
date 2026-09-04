@@ -451,6 +451,10 @@ class ModelsStore implements ModelPropsHost, ModelStatusHost {
 				if (visible.length === 1 && this.isModelLoaded(visible[0].model)) {
 					this.selectModelById(visible[0].id);
 				}
+
+				// reconnect /models/sse and resume paused downloads left from a
+				// previous page load, like a rerun of `llama-server -hf` would
+				void this._status.restoreDownloads();
 			} else {
 				this.models = await this.fetchModelModeInternal();
 			}
